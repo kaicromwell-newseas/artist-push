@@ -10,6 +10,7 @@ const accountsList = document.getElementById('accountsList');
 const newAccountInput = document.getElementById('newAccountInput');
 const addAccountBtn = document.getElementById('addAccountBtn');
 const addAccountStatus = document.getElementById('addAccountStatus');
+const instagramStatus = document.getElementById('instagramStatus');
 const notificationEmail = document.getElementById('notificationEmail');
 const checkInterval = document.getElementById('checkInterval');
 const saveSettingsBtn = document.getElementById('saveSettingsBtn');
@@ -40,8 +41,8 @@ function updateFeed(posts) {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                     <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
                 </svg>
-                <h3>No posts yet</h3>
-                <p>Posts from monitored accounts will appear here</p>
+                <h3>No recent posts</h3>
+                <p>Posts from the last 24 hours will appear here</p>
             </div>
         `;
         return;
@@ -52,8 +53,9 @@ function updateFeed(posts) {
 
 // Create post element
 function createPostElement(post) {
-    const timestamp = new Date(post.timestamp).toLocaleString();
+    const timestamp = formatTimestamp(post.timestamp);
     const isVideo = post.type === 'video';
+    const isCarousel = post.type === 'carousel';
     
     return `
         <div class="post-item" data-post-id="${post.id}">
@@ -68,6 +70,11 @@ function createPostElement(post) {
             
             ${isVideo ? 
                 `<video src="${post.media_url}" controls class="post-media"></video>` :
+                isCarousel ?
+                `<div class="post-media carousel-indicator">
+                    <img src="${post.media_url}" alt="Post media" class="post-media">
+                    <div class="carousel-badge">📷</div>
+                </div>` :
                 `<img src="${post.media_url}" alt="Post media" class="post-media">`
             }
             
@@ -92,6 +99,25 @@ function createPostElement(post) {
             </div>
         </div>
     `;
+}
+
+// Format timestamp to show relative time
+function formatTimestamp(timestamp) {
+    const now = new Date();
+    const postTime = new Date(timestamp);
+    const diffMs = now - postTime;
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffMinutes = Math.floor(diffMs / (1000 * 60));
+    
+    if (diffMinutes < 1) {
+        return 'Just now';
+    } else if (diffMinutes < 60) {
+        return `${diffMinutes}m ago`;
+    } else if (diffHours < 24) {
+        return `${diffHours}h ago`;
+    } else {
+        return postTime.toLocaleDateString() + ' ' + postTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    }
 }
 
 // Utility functions
@@ -393,6 +419,20 @@ async function removeAccount(username) {
     } catch (error) {
         console.error('Error removing account:', error);
         showStatusMessage('Error removing account', 'error');
+    }
+}
+
+// Instagram status function
+function showInstagramStatus(message, type = 'info') {
+    instagramStatus.textContent = message;
+    instagramStatus.className = `status-message ${type}`;
+    
+    if (type !== 'info') {
+        // Clear message after 5 seconds for success/error
+        setTimeout(() => {
+            instagramStatus.textContent = '';
+            instagramStatus.className = 'status-message';
+        }, 5000);
     }
 }
 

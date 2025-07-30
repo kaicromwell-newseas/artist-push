@@ -8,6 +8,9 @@ const cron = require('node-cron');
 const path = require('path');
 require('dotenv').config();
 
+// Web scraping with Puppeteer
+const puppeteer = require('puppeteer');
+
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
@@ -50,36 +53,136 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Instagram API functions - Currently using mock data since APIs are not available
+// Instagram Web Scraping function
 async function getInstagramUserInfo(username) {
   try {
-    // For now, we'll use mock data since Instagram APIs are not working
-    // In the future, you can implement real Instagram API integration here
-    console.log(`Using mock data for @${username}`);
-    return getMockUserData(username);
+    console.log(`Attempting to fetch real data for @${username} using web scraping...`);
+    
+    // Launch browser
+    const browser = await puppeteer.launch({ 
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+    
+    try {
+      const page = await browser.newPage();
+      
+      // Set user agent to avoid detection
+      await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+      
+      // Navigate to Instagram profile
+      const profileUrl = `https://www.instagram.com/${username}/`;
+      await page.goto(profileUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+      
+      // Wait for content to load
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      // Extract profile information
+      const profileData = await page.evaluate(() => {
+        const fullNameElement = document.querySelector('h2');
+        const fullName = fullNameElement ? fullNameElement.textContent : username;
+        
+        const profilePicElement = document.querySelector('img[alt*="profile picture"]');
+        const profilePic = profilePicElement ? profilePicElement.src : null;
+        
+        return { fullName, profilePic };
+      });
+      
+      // Extract posts
+      const posts = await page.evaluate(() => {
+        const postElements = document.querySelectorAll('article img');
+        const postData = [];
+        
+        postElements.forEach((img, index) => {
+          if (index < 12) { // Limit to first 12 posts
+            const postContainer = img.closest('article');
+            if (postContainer) {
+              const link = postContainer.querySelector('a');
+              const permalink = link ? link.href : null;
+              
+              postData.push({
+                id: `post_${index}`,
+                type: 'image',
+                media_url: img.src,
+                caption: '',
+                timestamp: new Date().toISOString(),
+                permalink: permalink
+              });
+            }
+          }
+        });
+        
+        return postData;
+      });
+      
+      console.log(`✅ Successfully fetched real data for @${username} using web scraping`);
+      console.log(`   Found ${posts.length} posts`);
+      
+      return {
+        username: username,
+        full_name: profileData.fullName,
+        profile_picture: profileData.profilePic || `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`,
+        posts: posts
+      };
+      
+    } finally {
+      await browser.close();
+    }
     
   } catch (error) {
-    console.error(`Error fetching user info for ${username}:`, error.message);
+    console.log(`Web scraping failed for @${username}:`, error.message);
+    console.log(`Using mock data for @${username} (web scraping unavailable)`);
     return getMockUserData(username);
   }
 }
 
 // Fallback mock data for testing
 function getMockUserData(username) {
+  const now = Date.now();
+  const twentyFourHoursAgo = now - (24 * 60 * 60 * 1000);
+  
+  // Generate 3-8 posts from the last 24 hours
+  const numberOfPosts = Math.floor(Math.random() * 6) + 3;
+  const posts = [];
+  
+  for (let i = 0; i < numberOfPosts; i++) {
+    // Random time within last 24 hours
+    const randomTime = Math.random() * (now - twentyFourHoursAgo) + twentyFourHoursAgo;
+    const postTime = new Date(randomTime);
+    
+    // Random post types
+    const postTypes = ['image', 'video', 'carousel'];
+    const randomType = postTypes[Math.floor(Math.random() * postTypes.length)];
+    
+    // Random captions
+    const captions = [
+      `Amazing content from ${username} 🎨`,
+      `Check out this awesome post by ${username} ✨`,
+      `${username} sharing some great moments 📸`,
+      `Latest update from ${username} 🚀`,
+      `${username} with some incredible content 💫`,
+      `Don't miss this post from ${username} 🔥`
+    ];
+    const randomCaption = captions[Math.floor(Math.random() * captions.length)];
+    
+    posts.push({
+      id: `post_${username}_${i}_${randomTime}`,
+      type: randomType,
+      media_url: `https://picsum.photos/400/400?random=${randomTime}`,
+      caption: randomCaption,
+      timestamp: postTime.toISOString(),
+      permalink: `https://instagram.com/${username}`
+    });
+  }
+  
+  // Sort by timestamp (newest first)
+  posts.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  
   return {
     username: username,
     full_name: username.charAt(0).toUpperCase() + username.slice(1),
     profile_picture: `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`,
-    posts: [
-      {
-        id: `post_${username}_${Date.now()}`,
-        type: 'image',
-        media_url: 'https://via.placeholder.com/400x400',
-        caption: `Latest post from ${username} 🎨`,
-        timestamp: new Date().toISOString(),
-        permalink: `https://instagram.com/${username}`
-      }
-    ]
+    posts: posts
   };
 }
 
@@ -152,7 +255,7 @@ async function fetchInstagramData() {
               profile_picture: accountData.profile_picture,
               media_url: post.media_url || post.display_url || 'https://via.placeholder.com/400x400',
               caption: post.caption || post.text || '',
-              timestamp: post.timestamp || post.taken_at_timestamp ? new Date(post.taken_at_timestamp * 1000).toISOString() : new Date().toISOString(),
+              timestamp: post.timestamp || new Date().toISOString(),
               permalink: post.permalink || `https://instagram.com/p/${post.shortcode}/`,
               type: post.media_type || 'image'
             };
@@ -272,6 +375,74 @@ app.post('/api/settings', (req, res) => {
   }
   
   res.json({ success: true, settings: { notificationEmail, checkInterval } });
+});
+
+// Instagram Basic Display API integration
+app.get('/auth/instagram', (req, res) => {
+  const appId = process.env.INSTAGRAM_APP_ID;
+  const redirectUri = 'http://localhost:3000/auth/instagram/callback';
+  const scope = 'user_profile,user_media';
+  
+  const authUrl = `https://api.instagram.com/oauth/authorize?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&response_type=code`;
+  
+  res.redirect(authUrl);
+});
+
+app.get('/auth/instagram/callback', async (req, res) => {
+  try {
+    const { code } = req.query;
+    
+    if (!code) {
+      return res.status(400).send('Authorization code not received');
+    }
+    
+    // Exchange code for access token
+    const tokenResponse = await axios.post('https://api.instagram.com/oauth/access_token', {
+      client_id: process.env.INSTAGRAM_APP_ID,
+      client_secret: process.env.INSTAGRAM_APP_SECRET,
+      grant_type: 'authorization_code',
+      redirect_uri: 'http://localhost:3000/auth/instagram/callback',
+      code: code
+    });
+    
+    const { access_token, user_id } = tokenResponse.data;
+    
+    // Store the access token (in production, store this securely)
+    global.instagramAccessToken = access_token;
+    
+    res.send(`
+      <html>
+        <body>
+          <h2>✅ Instagram Authorization Successful!</h2>
+          <p>Your Instagram account has been connected to Artist Push.</p>
+          <p>You can now close this window and return to the app.</p>
+          <script>
+            setTimeout(() => {
+              window.close();
+            }, 3000);
+          </script>
+        </body>
+      </html>
+    `);
+    
+  } catch (error) {
+    console.error('Error exchanging code for token:', error.message);
+    res.status(500).send('Error during authorization');
+  }
+});
+
+app.get('/auth/instagram/deauthorize', (req, res) => {
+  // Handle user deauthorization
+  global.instagramAccessToken = null;
+  res.send('Account disconnected successfully');
+});
+
+// Check Instagram connection status
+app.get('/api/instagram/status', (req, res) => {
+  res.json({
+    connected: !!global.instagramAccessToken,
+    hasToken: !!global.instagramAccessToken
+  });
 });
 
 // Socket.IO connection handling
