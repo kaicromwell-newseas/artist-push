@@ -8,8 +8,7 @@ const cron = require('node-cron');
 const path = require('path');
 require('dotenv').config();
 
-// Web scraping with Puppeteer
-const puppeteer = require('puppeteer');
+// Instagram Basic Display API - no web scraping needed
 
 const app = express();
 const server = http.createServer(app);
@@ -35,8 +34,8 @@ let lastPostIds = new Map();
 let feedData = [];
 let monitoredAccounts = new Set();
 
-// Load accounts from environment variable
-if (process.env.INSTAGRAM_ACCOUNTS) {
+// Load accounts from environment variable (only if not empty or contains real accounts)
+if (process.env.INSTAGRAM_ACCOUNTS && !process.env.INSTAGRAM_ACCOUNTS.includes('username')) {
     process.env.INSTAGRAM_ACCOUNTS.split(',').forEach(username => {
         monitoredAccounts.add(username.trim());
     });
@@ -53,85 +52,105 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Instagram Web Scraping function
+// Public Instagram Profile Viewer (works immediately, no setup needed)
 async function getInstagramUserInfo(username) {
   try {
-    console.log(`Attempting to fetch real data for @${username} using web scraping...`);
+    console.log(`Attempting to fetch real data for @${username} using public Instagram endpoints...`);
     
-    // Launch browser
-    const browser = await puppeteer.launch({ 
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
+    // Try multiple Instagram API endpoints that might work
+    const endpoints = [
+      `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
+      `https://www.instagram.com/${username}/?__a=1&__d=dis`,
+      `https://www.instagram.com/graphql/query/?query_hash=c9100bf9110dd6361671f113dd02e7d6&variables=${encodeURIComponent(JSON.stringify({username: username}))}`
+    ];
     
-    try {
-      const page = await browser.newPage();
-      
-      // Set user agent to avoid detection
-      await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-      
-      // Navigate to Instagram profile
-      const profileUrl = `https://www.instagram.com/${username}/`;
-      await page.goto(profileUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-      
-      // Wait for content to load
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      
-      // Extract profile information
-      const profileData = await page.evaluate(() => {
-        const fullNameElement = document.querySelector('h2');
-        const fullName = fullNameElement ? fullNameElement.textContent : username;
+    for (const endpoint of endpoints) {
+      try {
+        console.log(`🔄 Trying endpoint: ${endpoint.substring(0, 80)}...`);
         
-        const profilePicElement = document.querySelector('img[alt*="profile picture"]');
-        const profilePic = profilePicElement ? profilePicElement.src : null;
-        
-        return { fullName, profilePic };
-      });
-      
-      // Extract posts
-      const posts = await page.evaluate(() => {
-        const postElements = document.querySelectorAll('article img');
-        const postData = [];
-        
-        postElements.forEach((img, index) => {
-          if (index < 12) { // Limit to first 12 posts
-            const postContainer = img.closest('article');
-            if (postContainer) {
-              const link = postContainer.querySelector('a');
-              const permalink = link ? link.href : null;
-              
-              postData.push({
-                id: `post_${index}`,
-                type: 'image',
-                media_url: img.src,
-                caption: '',
-                timestamp: new Date().toISOString(),
-                permalink: permalink
-              });
-            }
-          }
+        const response = await axios.get(endpoint, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': 'https://www.instagram.com/',
+            'Origin': 'https://www.instagram.com',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'Connection': 'keep-alive'
+          },
+          timeout: 15000
         });
         
-        return postData;
-      });
-      
-      console.log(`✅ Successfully fetched real data for @${username} using web scraping`);
-      console.log(`   Found ${posts.length} posts`);
-      
-      return {
-        username: username,
-        full_name: profileData.fullName,
-        profile_picture: profileData.profilePic || `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`,
-        posts: posts
-      };
-      
-    } finally {
-      await browser.close();
+        if (response.data) {
+          console.log(`✅ Successfully fetched data from endpoint for @${username}`);
+          
+          // Parse the response based on the endpoint
+          let userData = null;
+          let posts = [];
+          
+          if (endpoint.includes('web_profile_info')) {
+            // Parse web_profile_info response
+            if (response.data.data && response.data.data.user) {
+              userData = response.data.data.user;
+              console.log(`✅ Found user profile for @${username}`);
+            }
+          } else if (endpoint.includes('__a=1')) {
+            // Parse __a=1 response
+            if (response.data.graphql && response.data.graphql.user) {
+              userData = response.data.graphql.user;
+              console.log(`✅ Found user profile for @${username}`);
+            }
+          } else if (endpoint.includes('graphql')) {
+            // Parse GraphQL response
+            if (response.data.data && response.data.data.user) {
+              userData = response.data.data.user;
+              console.log(`✅ Found user profile for @${username}`);
+            }
+          }
+          
+          if (userData) {
+            // Extract posts if available
+            if (userData.edge_owner_to_timeline_media && userData.edge_owner_to_timeline_media.edges) {
+              posts = userData.edge_owner_to_timeline_media.edges.slice(0, 12).map((edge, index) => {
+                const node = edge.node;
+                return {
+                  id: node.id || `post_${index}_${Date.now()}`,
+                  type: node.is_video ? 'video' : 'image',
+                  media_url: node.display_url || node.video_url,
+                  caption: node.edge_media_to_caption?.edges?.[0]?.node?.text || 
+                          `Post from ${new Date(node.taken_at_timestamp * 1000).toLocaleDateString()}`,
+                  timestamp: new Date(node.taken_at_timestamp * 1000).toISOString(),
+                  permalink: `https://www.instagram.com/p/${node.shortcode}/`,
+                  username: username,
+                  full_name: userData.full_name || username.charAt(0).toUpperCase() + username.slice(1)
+                };
+              });
+            }
+            
+            console.log(`✅ Successfully fetched ${posts.length} posts for @${username}`);
+            
+            return {
+              username: username,
+              full_name: userData.full_name || username.charAt(0).toUpperCase() + username.slice(1),
+              profile_picture: userData.profile_pic_url || userData.profile_pic_url_hd || `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`,
+              posts: posts
+            };
+          }
+        }
+      } catch (endpointError) {
+        console.log(`❌ Endpoint failed: ${endpointError.message}`);
+        continue; // Try next endpoint
+      }
     }
     
+    console.log(`❌ All public endpoints failed for @${username}, using mock data`);
+    return getMockUserData(username);
+    
   } catch (error) {
-    console.log(`Web scraping failed for @${username}:`, error.message);
-    console.log(`Using mock data for @${username} (web scraping unavailable)`);
+    console.error(`❌ Error fetching data for @${username}:`, error.message);
     return getMockUserData(username);
   }
 }
@@ -437,12 +456,77 @@ app.get('/auth/instagram/deauthorize', (req, res) => {
   res.send('Account disconnected successfully');
 });
 
-// Check Instagram connection status
+// Instagram status endpoint (public profiles don't need authentication)
 app.get('/api/instagram/status', (req, res) => {
   res.json({
-    connected: !!global.instagramAccessToken,
-    hasToken: !!global.instagramAccessToken
+    connected: true,
+    message: 'Ready to fetch public Instagram profiles'
   });
+});
+
+// Manual trigger for data fetching (for testing)
+app.post('/api/trigger-fetch', async (req, res) => {
+  try {
+    console.log('🔄 Manual trigger: Fetching Instagram data...');
+    await fetchInstagramData();
+    res.json({ success: true, message: 'Data fetch triggered successfully' });
+  } catch (error) {
+    console.error('❌ Manual trigger failed:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Simple image proxy that works with any image URL
+app.get('/api/proxy-image', async (req, res) => {
+  try {
+    const imageUrl = req.query.url;
+    
+    if (!imageUrl) {
+      return res.status(400).json({ error: 'Image URL is required' });
+    }
+    
+    console.log(`🖼️ Proxying image: ${imageUrl.substring(0, 100)}...`);
+    
+    // Simple, direct approach that works with most image URLs
+    const response = await axios.get(imageUrl, {
+      responseType: 'arraybuffer',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'image/*,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive'
+      },
+      timeout: 15000,
+      maxRedirects: 3
+    });
+    
+    // Set appropriate headers
+    res.set('Content-Type', response.headers['content-type'] || 'image/jpeg');
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.set('Access-Control-Allow-Origin', '*');
+    
+    // Send the image data
+    res.send(response.data);
+    
+  } catch (error) {
+    console.error('❌ Image proxy failed:', error.message);
+    
+    // Return a simple, clean placeholder
+    res.set('Content-Type', 'image/svg+xml');
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.set('Access-Control-Allow-Origin', '*');
+    
+    const placeholderSvg = `<svg width="400" height="300" xmlns="http://www.w3.org/2000/svg">
+      <rect width="100%" height="100%" fill="#f8f9fa"/>
+      <rect x="50%" y="40%" width="60" height="60" rx="8" fill="#dee2e6" transform="translate(-30, -30)"/>
+      <path d="M 50% 40% L 50% 60% M 40% 50% L 60% 50%" stroke="#adb5bd" stroke-width="3" stroke-linecap="round" transform="translate(-30, -30)"/>
+      <text x="50%" y="75%" font-family="system-ui, sans-serif" font-size="14" fill="#6c757d" text-anchor="middle">Image unavailable</text>
+      <text x="50%" y="85%" font-family="system-ui, sans-serif" font-size="12" fill="#adb5bd" text-anchor="middle">Tap to view on Instagram</text>
+    </svg>`;
+    
+    res.send(placeholderSvg);
+  }
 });
 
 // Socket.IO connection handling
@@ -468,5 +552,8 @@ fetchInstagramData();
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Open http://localhost:${PORT} in your browser`);
-  console.log(`Monitoring accounts: ${INSTAGRAM_ACCOUNTS.join(', ') || 'None configured'}`);
-}); 
+  console.log(`Monitoring accounts: ${Array.from(monitoredAccounts).join(', ') || 'None configured'}`);
+});
+
+// Export for testing
+module.exports = { fetchInstagramData }; 

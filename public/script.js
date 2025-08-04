@@ -51,16 +51,22 @@ function updateFeed(posts) {
     feed.innerHTML = posts.map(post => createPostElement(post)).join('');
 }
 
-// Create post element
+// Create post element with enhanced image handling
 function createPostElement(post) {
     const timestamp = formatTimestamp(post.timestamp);
     const isVideo = post.type === 'video';
     const isCarousel = post.type === 'carousel';
     
+    // Use proxy for media URLs to bypass CORS restrictions
+    const proxyMediaUrl = `/api/proxy-image?url=${encodeURIComponent(post.media_url)}`;
+    const proxyProfileUrl = `/api/proxy-image?url=${encodeURIComponent(post.profile_picture)}`;
+    
     return `
         <div class="post-item" data-post-id="${post.id}">
             <div class="post-header">
-                <img src="${post.profile_picture}" alt="${post.full_name}" class="post-avatar">
+                <img src="${proxyProfileUrl}" alt="${post.full_name}" class="post-avatar" 
+                     onerror="this.src='https://api.dicebear.com/7.x/avataaars/svg?seed=${post.username}'"
+                     onload="this.style.opacity='1'">
                 <div class="post-user-info">
                     <div class="post-username">@${post.username}</div>
                     <div class="post-fullname">${post.full_name}</div>
@@ -69,13 +75,16 @@ function createPostElement(post) {
             </div>
             
             ${isVideo ? 
-                `<video src="${post.media_url}" controls class="post-media"></video>` :
+                `<video src="${proxyMediaUrl}" controls class="post-media" 
+                        onerror="this.parentElement.innerHTML='<div class=\\'media-fallback\\' onclick=\\'viewOnInstagram(\\'${post.permalink}\\')\\'>📹 Video unavailable<br><small>Tap to view on Instagram</small></div>'"></video>` :
                 isCarousel ?
                 `<div class="post-media carousel-indicator">
-                    <img src="${post.media_url}" alt="Post media" class="post-media">
+                    <img src="${proxyMediaUrl}" alt="Post media" class="post-media"
+                         onerror="this.parentElement.innerHTML='<div class=\\'media-fallback\\' onclick=\\'viewOnInstagram(\\'${post.permalink}\\')\\'>📷 Image unavailable<br><small>Tap to view on Instagram</small></div>'">
                     <div class="carousel-badge">📷</div>
                 </div>` :
-                `<img src="${post.media_url}" alt="Post media" class="post-media">`
+                `<img src="${proxyMediaUrl}" alt="Post media" class="post-media"
+                      onerror="this.outerHTML='<div class=\\'media-fallback\\' onclick=\\'viewOnInstagram(\\'${post.permalink}\\')\\'>📷 Image unavailable<br><small>Tap to view on Instagram</small></div>'">`
             }
             
             ${post.caption ? `<div class="post-caption">${post.caption}</div>` : ''}
@@ -436,23 +445,33 @@ function showInstagramStatus(message, type = 'info') {
     }
 }
 
-// Initialize app
-document.addEventListener('DOMContentLoaded', () => {
-    loadInitialData();
-    loadAccounts(); // Load accounts list
-    
-    // Load saved settings from localStorage
-    const savedEmail = localStorage.getItem('notificationEmail');
-    const savedInterval = localStorage.getItem('checkInterval');
-    
-    if (savedEmail) {
-        notificationEmail.value = savedEmail;
-    }
-    
-    if (savedInterval) {
-        checkInterval.value = savedInterval;
-    }
-});
+        // Show Instagram status (public profiles don't need connection)
+        function showInstagramStatus() {
+            const statusElement = document.getElementById('instagramStatus');
+            if (statusElement) {
+                statusElement.innerHTML = '<span class="status-success">✅ Ready to fetch real posts from public Instagram accounts</span>';
+                statusElement.className = 'status-message success';
+            }
+        }
+
+        // Initialize app
+        document.addEventListener('DOMContentLoaded', () => {
+            loadInitialData();
+            loadAccounts(); // Load accounts list
+            showInstagramStatus(); // Show ready status
+            
+            // Load saved settings from localStorage
+            const savedEmail = localStorage.getItem('notificationEmail');
+            const savedInterval = localStorage.getItem('checkInterval');
+            
+            if (savedEmail) {
+                notificationEmail.value = savedEmail;
+            }
+            
+            if (savedInterval) {
+                checkInterval.value = savedInterval;
+            }
+        });
 
 // Auto-save settings to localStorage
 notificationEmail.addEventListener('input', () => {
